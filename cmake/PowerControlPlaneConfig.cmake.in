@@ -1,0 +1,10 @@
+@PACKAGE_INIT@
+
+include("${CMAKE_CURRENT_LIST_DIR}/PowerControlPlaneTargets.cmake")
+
+check_required_components(PowerControlPlane)
+
+set(PowerControlPlane_VERSION "@PROJECT_VERSION@")
+set(PowerControlPlane_VERSION_MAJOR "@PROJECT_VERSION_MAJOR@")
+set(PowerControlPlane_VERSION_MINOR "@PROJECT_VERSION_MINOR@")
+set(PowerControlPlane_VERSION_PATCH "@PROJECT_VERSION_PATCH@")

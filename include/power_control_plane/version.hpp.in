@@ -1,0 +1,23 @@
+#pragma once
+
+// Version identity of the installed Power Control Plane package.
+
+#include <string_view>
+
+#define POWER_CONTROL_PLANE_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
+#define POWER_CONTROL_PLANE_VERSION_MINOR @PROJECT_VERSION_MINOR@
+#define POWER_CONTROL_PLANE_VERSION_PATCH @PROJECT_VERSION_PATCH@
+
+namespace power_control_plane {
+
+inline constexpr std::string_view kPackageName = "PowerControlPlane";
+inline constexpr std::string_view kVersionString = "@PROJECT_VERSION@";
+inline constexpr int kVersionMajor = POWER_CONTROL_PLANE_VERSION_MAJOR;
+inline constexpr int kVersionMinor = POWER_CONTROL_PLANE_VERSION_MINOR;
+inline constexpr int kVersionPatch = POWER_CONTROL_PLANE_VERSION_PATCH;
+
+// Canonical state-encoding version. It is independent of the package version:
+// the encoding only changes when the persisted byte layout changes.
+inline constexpr std::uint32_t kStateFormatVersion = @POWER_CONTROL_PLANE_STATE_FORMAT_VERSION@;
+
+}  // namespace power_control_plane
