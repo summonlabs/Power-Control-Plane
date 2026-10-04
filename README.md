@@ -1,7 +1,7 @@
 # Power Control Plane
 
 Power Control Plane is the facility-wide authority layer for electrical operating
-state in the Summon Software Labs Data Center Control Plane. It answers one question:
+state. It answers one question:
 
 > Which facility electrical operating state and control authority are valid now, which
 > actions are permitted under the current topology, capacity, interlock, obligation,
