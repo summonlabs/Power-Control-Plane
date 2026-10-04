@@ -36,7 +36,7 @@ endpoint, credential, or protocol in this repository.
 
 ## Architecture
 
-\`\`\`
+```
 include/power_control_plane/       public headers
   ids.hpp            strongly typed identities: epoch, incarnation, generation,
                      revision, attempt, permission, evidence generation/revision
@@ -67,10 +67,10 @@ bench/               the completed-operation benchmark
 tests/               the proof-obligation test suite and its independent-process probe
 downstream/consumer/ an out-of-tree find_package consumer
 docs/                store format and design notes
-\`\`\`
+```
 
 The library is exported as the namespaced CMake target
-\`PowerControlPlane::power_control_plane\`.
+`PowerControlPlane::power_control_plane`.
 
 ## Authority, generation, and fencing
 
@@ -78,21 +78,21 @@ Five identities that are usually collapsed into one integer are kept distinct:
 
 | Identity | Meaning |
 | --- | --- |
-| \`StoreIncarnation\` | 128-bit identity of one durable store, generated once at creation |
-| \`ControllerEpoch\` | monotonic writer-authority counter, advanced by one per acquisition |
-| \`ControllerIncarnation\` | 128-bit identity of one writer session inside an epoch |
-| \`ControlGeneration\` | the authoritative facility electrical control generation |
-| \`StateRevision\` | the authoritative publication revision |
+| `StoreIncarnation` | 128-bit identity of one durable store, generated once at creation |
+| `ControllerEpoch` | monotonic writer-authority counter, advanced by one per acquisition |
+| `ControllerIncarnation` | 128-bit identity of one writer session inside an epoch |
+| `ControlGeneration` | the authoritative facility electrical control generation |
+| `StateRevision` | the authoritative publication revision |
 
-\`ControlGeneration\` advances only when the electrical operating state changes, which
-is a mode transition. \`StateRevision\` advances on every publication. A permission is
+`ControlGeneration` advances only when the electrical operating state changes, which
+is a mode transition. `StateRevision` advances on every publication. A permission is
 bounded in both.
 
 Writer authority is a real operating-system lock (a file opened with no sharing on
 Windows, an exclusive advisory lock on POSIX) that the kernel releases when the owning
 process dies. Holding it is necessary but not sufficient: every mutation presents a
-\`WriterLease\` carrying its epoch, incarnation, store incarnation, and process-local
-token, and is refused with a typed \`stale_authority\` outcome once a successor has taken
+`WriterLease` carrying its epoch, incarnation, store incarnation, and process-local
+token, and is refused with a typed `stale_authority` outcome once a successor has taken
 authority.
 
 The authority marker is a rollback fence recording the highest revision ever published.
@@ -136,7 +136,7 @@ responsible.
 * A denied or indeterminate operation changes no authoritative state at all: the
   revision, the generation, the attempt set, and the permission use count are
   untouched, and nothing is recorded for replay.
-* \`evaluate_action\` runs the whole precedence chain without mutating anything: it
+* `evaluate_action` runs the whole precedence chain without mutating anything: it
   consumes no permission, creates no attempt, and advances no revision.
 * Authorization, issued command, acknowledgement, observed effect, and verified effect
   are five separate published facts. A verification report produced by the adapter that
@@ -154,12 +154,12 @@ generation file per publication. The complete format is specified in
 
 The publication protocol is staged and observable:
 
-\`\`\`
+```
 plan -> validate -> reserve generation -> write staging -> flush durable content
      -> read back and verify -> atomically publish generation
      -> commit authoritative head marker  <-- the commit point
      -> advance the rollback fence -> retire residue
-\`\`\`
+```
 
 On open the store adopts exactly one whole verified generation or refuses. A generation
 file that the head marker does not name is residue from an interrupted publication and
@@ -177,48 +177,48 @@ current binding.
 Requirements: CMake 3.21 or newer and a C++20 compiler. The exercised platform is
 Windows with MSVC (Visual Studio 2022, toolset 19.44).
 
-\`\`\`sh
+```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
-\`\`\`
+```
 
 Build options:
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| \`POWER_CONTROL_PLANE_BUILD_TESTS\` | ON (top level) | build the proof-obligation test suite |
-| \`POWER_CONTROL_PLANE_BUILD_EXAMPLES\` | ON (top level) | build and register the four examples as tests |
-| \`POWER_CONTROL_PLANE_BUILD_BENCHMARKS\` | ON (top level) | build the benchmark |
-| \`POWER_CONTROL_PLANE_BUILD_TOOLS\` | ON (top level) | build the \`pcp\` administration tool |
-| \`POWER_CONTROL_PLANE_WARNINGS_AS_ERRORS\` | ON | first-party warnings are errors |
-| \`POWER_CONTROL_PLANE_ENABLE_ASAN\` | OFF | build first-party targets with AddressSanitizer |
-| \`POWER_CONTROL_PLANE_DOWNSTREAM_PREFIX\` | empty | install prefix that enables the out-of-tree consumer test |
+| `POWER_CONTROL_PLANE_BUILD_TESTS` | ON (top level) | build the proof-obligation test suite |
+| `POWER_CONTROL_PLANE_BUILD_EXAMPLES` | ON (top level) | build and register the four examples as tests |
+| `POWER_CONTROL_PLANE_BUILD_BENCHMARKS` | ON (top level) | build the benchmark |
+| `POWER_CONTROL_PLANE_BUILD_TOOLS` | ON (top level) | build the `pcp` administration tool |
+| `POWER_CONTROL_PLANE_WARNINGS_AS_ERRORS` | ON | first-party warnings are errors |
+| `POWER_CONTROL_PLANE_ENABLE_ASAN` | OFF | build first-party targets with AddressSanitizer |
+| `POWER_CONTROL_PLANE_DOWNSTREAM_PREFIX` | empty | install prefix that enables the out-of-tree consumer test |
 
 ## Installing and consuming the package
 
-\`\`\`sh
+```sh
 cmake --install build --prefix /some/prefix
 cmake -S downstream/consumer -B consumer-build -DCMAKE_PREFIX_PATH=/some/prefix
 cmake --build consumer-build
 cmake --build consumer-build --target run_consumer
-\`\`\`
+```
 
 A consumer writes:
 
-\`\`\`cmake
+```cmake
 find_package(PowerControlPlane 1.0 REQUIRED)
 target_link_libraries(my_target PRIVATE PowerControlPlane::power_control_plane)
-\`\`\`
+```
 
 ## Command line tool
 
-\`pcp\` is a thin driver: every verb calls the same \`ControlPlane\` API an embedding
+`pcp` is a thin driver: every verb calls the same `ControlPlane` API an embedding
 process would call, so there is no path that bypasses the policy and interlock engine.
-Exit codes are \`0\` accepted or replayed, \`1\` usage or input error, \`2\` refused by the
-control plane, and \`3\` store or integrity failure.
+Exit codes are `0` accepted or replayed, `1` usage or input error, `2` refused by the
+control plane, and `3` store or integrity failure.
 
-\`\`\`
+```
 pcp --store <path> [--read-only] [--retain N] <verb> [options]
 
 inspection
@@ -241,41 +241,41 @@ administration (takes writer authority automatically)
   permissions revoke <id> | permissions retire <id> <state>
   attempt --action <id> --kind <k> --target <t> [--load-kw N]
           [--adapter <behaviour>] [--verifier <behaviour>]
-\`\`\`
+```
 
 Two behaviours are worth calling out because they are the engine showing through the
 tool:
 
-* \`--evidence <spec>\` asserts that the named external evidence references are current.
+* `--evidence <spec>` asserts that the named external evidence references are current.
   The assertion is itself a mutation, so the tool publishes a revalidation and then
   runs the verb with the asserted evidence in force for that process. Without it, every
   evidence-dependent verb is refused, because a fresh process has no revalidated
   evidence. The tool never invents freshness on the operator's behalf.
-* \`--key <hex>\` sets an explicit idempotency key. The default is derived from the verb
+* `--key <hex>` sets an explicit idempotency key. The default is derived from the verb
   and its arguments, so re-running the exact same command replays the committed result
   rather than executing twice.
 
 An evidence spec is
-\`source:kind:generation:revision:epoch:incarnation-hex:digest-hex\`.
+`source:kind:generation:revision:epoch:incarnation-hex:digest-hex`.
 
 ## Examples
 
 | Example | What it demonstrates |
 | --- | --- |
-| \`pcp_example_lifecycle\` | clean startup, policy installation, revalidation, a mode transition that preserves a continuity-required obligation, an action refused by that obligation, an authorized action, and store verification |
-| \`pcp_example_stale_authority\` | an interlock refusal no permissive policy can override, an idempotent replay of a lost response, an exhausted permission, a superseded writer epoch, and a stale control generation |
-| \`pcp_example_crash_recovery\` | a child process terminating inside the publication after the generation file is published but before the head marker is committed, then reopen, orphan retirement, stale evidence, revalidation, and verification |
-| \`pcp_example_adapter_simulation\` | authorization, issued command, acknowledgement, observed effect, and verified effect as five separate states across five scripted adapter behaviours |
+| `pcp_example_lifecycle` | clean startup, policy installation, revalidation, a mode transition that preserves a continuity-required obligation, an action refused by that obligation, an authorized action, and store verification |
+| `pcp_example_stale_authority` | an interlock refusal no permissive policy can override, an idempotent replay of a lost response, an exhausted permission, a superseded writer epoch, and a stale control generation |
+| `pcp_example_crash_recovery` | a child process terminating inside the publication after the generation file is published but before the head marker is committed, then reopen, orphan retirement, stale evidence, revalidation, and verification |
+| `pcp_example_adapter_simulation` | authorization, issued command, acknowledgement, observed effect, and verified effect as five separate states across five scripted adapter behaviours |
 
 All examples run as tests. The crash-recovery example starts a real second process and
-terminates it with \`std::_Exit\`, which ends the process immediately without running
+terminates it with `std::_Exit`, which ends the process immediately without running
 destructors or entering any error-reporting path.
 
 ## Validation performed
 
 Everything below was executed on the machine described in the benchmark section.
 
-* **Release and Debug builds.** \`/W4 /WX /permissive- /utf-8 /Zc:__cplusplus\` for the
+* **Release and Debug builds.** `/W4 /WX /permissive- /utf-8 /Zc:__cplusplus` for the
   library, the tool, the examples, the benchmark, and every test target. Both
   configurations build warning-free and pass the full suite.
 * **Eighteen registered CTest cases**: four examples plus fourteen proof-obligation
@@ -286,7 +286,7 @@ Everything below was executed on the machine described in the benchmark section.
   randomized state-machine invariants, real multiprocess and crash injection, and the
   command line tool. No test carries a timeout.
 * **Multiprocess proof.** A live writer refuses a second process with
-  \`lock_unavailable\`; a process that dies while holding writer authority releases the
+  `lock_unavailable`; a process that dies while holding writer authority releases the
   lock to the kernel and the successor's epoch advances; a child that cannot publish
   with a superseded epoch is refused; and process death is injected at each of the seven
   durable publication stages, after which the store reopens with exactly one whole
@@ -294,7 +294,7 @@ Everything below was executed on the machine described in the benchmark section.
 * **Deterministic replay proof.** For every retained publication pair, the logged
   transition payload is applied to the older published state and the result must be
   byte-identical to the newer published state. This is checked after every crash stage
-  and by the \`verify --replay\` verb.
+  and by the `verify --replay` verb.
 * **Adversarial input proof.** Corrupted head, corrupted generation, truncated head,
   oversized head, unknown magic, unknown format version, missing authority marker,
   missing head with a non-existent fence, an orphan generation, staging residue, a
@@ -312,7 +312,7 @@ Everything below was executed on the machine described in the benchmark section.
   invariants after every step; a failure reports the seed, and the same seed reproduces
   the same final revision, generation, mode, and collection sizes.
 * **Installed-package and downstream proof.** The package installs to a clean prefix,
-  and an independent out-of-tree consumer configures with \`find_package\`, builds, and
+  and an independent out-of-tree consumer configures with `find_package`, builds, and
   runs the full lifecycle against the installed package.
 
 Hardware validation was **not** performed and is not claimed. All actuation evidence in
@@ -320,18 +320,18 @@ this repository is produced by a deterministic simulator and is labelled SYNTHET
 
 ## Benchmarks
 
-\`pcp_bench\` measures completed operations only. Every timed mutation includes
+`pcp_bench` measures completed operations only. Every timed mutation includes
 validation, canonical encoding, the staging write, the required durable flush, read-back
 verification, the atomic generation publish, the authoritative head-marker commit, the
 rollback-fence advance, and residue retirement. Nothing times enqueue or submission
 latency and calls it completion.
 
-\`\`\`sh
+```sh
 build/bench/pcp_bench --root bench-store --scale 1
-\`\`\`
+```
 
 Methodology: single run per scenario at scale 1, no warm-up, wall time measured with
-\`std::chrono::steady_clock\` around the whole loop of completed operations, throughput
+`std::chrono::steady_clock` around the whole loop of completed operations, throughput
 reported as operations divided by wall time. Every result is labelled REAL: the durable
 work is performed against the host file system. The actuation evidence inside the
 attempt-lifecycle scenario is SYNTHETIC, because it comes from the deterministic
@@ -364,7 +364,7 @@ weighted towards provable recovery rather than throughput.
   semantics are validated; nothing has been connected to electrical equipment.
 * **The retry window is bounded by configuration.** The committed-operation index and
   the attempt set are bounded, and an operator who needs a longer replay window must
-  raise \`Limits::max_replay_records\` or \`Limits::max_attempts\`.
+  raise `Limits::max_replay_records` or `Limits::max_attempts`.
 * **The rollback fence trusts the authority marker.** An attacker who can rewrite both
   the head marker and the authority marker consistently is outside the documented trust
   model; the fence detects a rollback of the store directory, not a full adversarial
