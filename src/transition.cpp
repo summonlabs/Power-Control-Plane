@@ -740,6 +740,24 @@ Status apply_permission_granted(detail::StateEditor& editor, CanonicalReader& re
       existing.updated_revision = next_revision;
     }
   }
+  // A permission that can never be used again -- revoked, superseded, exhausted
+  // or past its lifetime -- is history. Identities are never reused and no
+  // transition removes a permission, so the table filled for good after
+  // max_permissions grants and no permission could be issued again. When the
+  // table is full the oldest spent record makes room; only max_permissions
+  // usable grants refuse a new one.
+  if (editor.permissions().size() >= limits.max_permissions) {
+    const auto spent = std::find_if(
+        editor.permissions().begin(), editor.permissions().end(),
+        [next_generation, next_revision](const PermissionGrant& existing) {
+          return existing.state != PermissionState::active ||
+                 !permission_within_lifetime(existing, ControlGeneration(next_generation),
+                                             next_revision);
+        });
+    if (spent != editor.permissions().end()) {
+      editor.permissions().erase(spent);
+    }
+  }
   PCP_TRY_STATUS(editor.upsert_permission(std::move(grant), limits));
   auto advanced = editor.next_permission_id().next();
   if (!advanced.has_value()) {

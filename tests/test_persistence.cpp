@@ -2,6 +2,7 @@
 // and strict rejection of malformed, truncated, oversized, or substituted input.
 
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -237,6 +238,115 @@ PCP_TEST(retention_bounds_the_number_of_retained_generations) {
     PCP_CHECK_EQ(decision.value().outcome, DecisionOutcome::accepted);
   }
   PCP_CHECK(fixture.value().plane().store().retained_publications().size() <= 3);
+  auto integrity = fixture.value().plane().verify_store();
+  PCP_CHECK(integrity.has_value());
+  PCP_CHECK(integrity.value().ok);
+}
+
+namespace {
+
+std::string generation_file(std::uint64_t revision) {
+  char buffer[40] = {};
+  std::snprintf(buffer, sizeof(buffer), "state-%020llu.bin",
+                static_cast<unsigned long long>(revision));
+  return std::string(buffer);
+}
+
+}  // namespace
+
+PCP_TEST(a_publication_that_fails_part_way_does_not_block_the_next_one) {
+  auto fixture = Fixture::create("persistence-partial-commit");
+  PCP_CHECK(fixture.has_value());
+  auto granted = fixture.value().grant({ActionKind::open_breaker}, {"bus-a"}, 32);
+  PCP_CHECK(granted.has_value());
+
+  // The next generation cannot be published: something that is not a file is in
+  // its place.
+  const std::uint64_t next = fixture.value().plane().store().head().revision.value() + 1;
+  const std::filesystem::path obstacle =
+      std::filesystem::path(fixture.value().root()) / generation_file(next);
+  std::filesystem::create_directory(obstacle);
+  auto intent = fixture.value().intent("open-0", ActionKind::open_breaker, "bus-a");
+  PCP_CHECK(intent.has_value());
+  auto refused = fixture.value().authorize(intent.value(), "persistence-partial/0");
+  PCP_CHECK(!refused.has_value() || refused.value().outcome != DecisionOutcome::accepted);
+  PCP_CHECK_EQ(fixture.value().plane().store().head().revision.value(), next - 1);
+
+  // The obstacle is gone. The failed publication left nothing behind that stops
+  // the same request from being published now.
+  std::filesystem::remove(obstacle);
+  auto accepted = fixture.value().authorize(intent.value(), "persistence-partial/0");
+  PCP_CHECK(accepted.has_value());
+  PCP_CHECK_EQ(accepted.value().outcome, DecisionOutcome::accepted);
+  PCP_CHECK_EQ(fixture.value().plane().store().head().revision.value(), next);
+  auto integrity = fixture.value().plane().verify_store();
+  PCP_CHECK(integrity.has_value());
+  PCP_CHECK(integrity.value().ok);
+}
+
+PCP_TEST(a_published_commit_is_reported_even_when_an_old_generation_cannot_be_retired) {
+  EngineOptions options;
+  options.retained_publications = 2;
+  auto fixture = Fixture::create("persistence-retire-busy", options);
+  PCP_CHECK(fixture.has_value());
+  auto granted = fixture.value().grant({ActionKind::open_breaker}, {"bus-a"}, 32);
+  PCP_CHECK(granted.has_value());
+
+  const std::vector<StateRevision> retained =
+      fixture.value().plane().store().retained_publications();
+  PCP_CHECK(!retained.empty());
+  const std::uint64_t before = fixture.value().plane().store().head().revision.value();
+  {
+    // Something else is reading the oldest retained generation while the commit
+    // that would retire it is made. Whether that file can be removed is a matter
+    // for cleanup: the head marker is committed either way.
+    std::ifstream held(std::filesystem::path(fixture.value().root()) /
+                           generation_file(retained.front().value()),
+                       std::ios::binary);
+    PCP_CHECK(held.is_open());
+    auto intent = fixture.value().intent("open-0", ActionKind::open_breaker, "bus-a");
+    PCP_CHECK(intent.has_value());
+    auto decision = fixture.value().authorize(intent.value(), "persistence-retire-busy/0");
+    PCP_CHECK(decision.has_value());
+    PCP_CHECK_EQ(decision.value().outcome, DecisionOutcome::accepted);
+    PCP_CHECK_EQ(fixture.value().plane().store().head().revision.value(), before + 1);
+  }
+
+  // The next commit continues from the published state.
+  auto intent = fixture.value().intent("open-1", ActionKind::open_breaker, "bus-a");
+  PCP_CHECK(intent.has_value());
+  auto decision = fixture.value().authorize(intent.value(), "persistence-retire-busy/1");
+  PCP_CHECK(decision.has_value());
+  PCP_CHECK_EQ(decision.value().outcome, DecisionOutcome::accepted);
+  PCP_CHECK_EQ(fixture.value().plane().store().head().revision.value(), before + 2);
+  auto integrity = fixture.value().plane().verify_store();
+  PCP_CHECK(integrity.has_value());
+  PCP_CHECK(integrity.value().ok);
+}
+
+PCP_TEST(spent_permissions_do_not_exhaust_the_permission_table) {
+  EngineOptions options;
+  options.limits.max_permissions = 4;
+  auto fixture = Fixture::create("persistence-permission-table", options);
+  PCP_CHECK(fixture.has_value());
+
+  // Every grant supersedes the one before it, so one permission is active at a
+  // time. The bound is on the permissions the state holds, not on how many a
+  // facility is granted over its life.
+  for (int index = 0; index < 12; ++index) {
+    auto granted = fixture.value().grant({ActionKind::open_breaker}, {"bus-a"}, 4);
+    PCP_CHECK(granted.has_value());
+    PCP_CHECK_EQ(granted.value().outcome, DecisionOutcome::accepted);
+  }
+  auto intent = fixture.value().intent("open-0", ActionKind::open_breaker, "bus-a");
+  PCP_CHECK(intent.has_value());
+  auto decision = fixture.value().authorize(intent.value(), "persistence-permission-table/0");
+  PCP_CHECK(decision.has_value());
+  PCP_CHECK_EQ(decision.value().outcome, DecisionOutcome::accepted);
+
+  auto snapshot = fixture.value().snapshot();
+  PCP_CHECK(snapshot.has_value());
+  PCP_CHECK(snapshot.value().state().permissions().size() <= 4);
   auto integrity = fixture.value().plane().verify_store();
   PCP_CHECK(integrity.has_value());
   PCP_CHECK(integrity.value().ok);

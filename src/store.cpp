@@ -629,9 +629,11 @@ Result<DurableStore> DurableStore::open(const std::string& root, StoreOpenMode m
       if (impl.head.present && victim == impl.head.revision) {
         continue;
       }
-      PCP_TRY_STATUS(
-          detail::remove_file_if_present(impl.path_of(state_file_name(victim))));
-      ++impl.open_report.retired_old_publications;
+      // An old generation that cannot be removed right now is not a reason to
+      // refuse the store: it is left for a later commit or open.
+      if (detail::remove_file_if_present(impl.path_of(state_file_name(victim))).ok()) {
+        ++impl.open_report.retired_old_publications;
+      }
     }
   }
 
@@ -733,6 +735,28 @@ Result<FacilityState> DurableStore::load_publication(StateRevision revision) con
   return FacilityState::decode(payload, impl_->options.limits);
 }
 
+namespace {
+
+constexpr std::string_view kAuthorityStagingName = "authority.tmp";
+
+// Publishes the authority marker by staging it and renaming it over the old one.
+// The staged file is removed again when the publication does not complete.
+Status publish_authority_marker(const std::string& staged, const std::string& destination,
+                                const AuthorityMarker& marker) {
+  const Bytes record = encode_authority(marker);
+  PCP_TRY_STATUS(detail::remove_file_if_present(staged));
+  Status published = detail::write_new_file_durable(staged, record.data(), record.size());
+  if (published.ok()) {
+    published = detail::replace_file_atomic(staged, destination);
+  }
+  if (!published.ok()) {
+    static_cast<void>(detail::remove_file_if_present(staged));
+  }
+  return published;
+}
+
+}  // namespace
+
 Result<WriterLease> DurableStore::acquire_writer() {
   std::lock_guard<std::mutex> guard(impl_->authority_mutex);
   if (impl_->mode != StoreOpenMode::read_write) {
@@ -778,8 +802,17 @@ Result<WriterLease> DurableStore::acquire_writer() {
       ::getpid()
 #endif
   );
-  const Bytes record = encode_authority(updated);
-  PCP_TRY_STATUS(detail::write_file_durable(authority_path, record.data(), record.size()));
+  // The marker is the rollback fence, and it is rewritten every time a writer
+  // takes authority. Rewriting it in place left a window in which a crash kept a
+  // truncated marker, and a store whose marker does not decode is refused for
+  // good. It is staged and renamed over the old one, like every other marker
+  // update, and the operating-system lock is given back when that fails.
+  const Status marked = publish_authority_marker(impl_->staging_path(kAuthorityStagingName),
+                                                 authority_path, updated);
+  if (!marked.ok()) {
+    impl_->lock.release();
+    return marked.error();
+  }
   impl_->authority = updated;
   impl_->writer_held = true;
   impl_->lease = WriterLease{};
@@ -885,6 +918,19 @@ Result<CommitReport> DurableStore::commit(const WriterLease& lease,
 
   const std::string staging_path = impl_->staging_path(report.staging_file);
   const std::string published_path = impl_->path_of(report.published_file);
+  const std::string head_staging = impl_->staging_path("head.tmp");
+
+  // A publication that stops part-way must not leave its staging files behind.
+  // Each is created exclusively, so a survivor made every later commit on this
+  // handle fail with a conflict until the store was reopened.
+  struct StagingResidue {
+    std::string state;
+    std::string head;
+    ~StagingResidue() {
+      static_cast<void>(detail::remove_file_if_present(state));
+      static_cast<void>(detail::remove_file_if_present(head));
+    }
+  } staging_residue{staging_path, head_staging};
 
   Bytes image(kStateHeaderSize + payload.size() + kStateTrailerSize, 0);
   put_magic(image, kStateMagicOffset, kStateMagic);
@@ -939,7 +985,6 @@ Result<CommitReport> DurableStore::commit(const WriterLease& lease,
   head_record.payload_bytes = payload.size();
   head_record.state_file = report.published_file;
   const Bytes head_image = encode_head(head_record);
-  const std::string head_staging = impl_->staging_path("head.tmp");
   PCP_TRY_STATUS(detail::write_new_file_durable(head_staging, head_image.data(),
                                                 head_image.size()));
   auto head_read_back = detail::read_file_bounded(head_staging, kHeadRecordSize);
@@ -955,7 +1000,27 @@ Result<CommitReport> DurableStore::commit(const WriterLease& lease,
   report.reached = CommitStage::head_committed;
   impl_->notify(CommitStage::head_committed, report);
 
-  // Stage 5: advance the rollback fence.
+  // The head marker names the new generation: the publication has happened and
+  // this handle adopts it now. Advancing the fence and retiring old generations
+  // come after the commit point, so a failure in either is not a failed commit.
+  // Returning one left this handle on the previous state while the store on disk
+  // had moved on, and told the caller that a published transition had not
+  // happened.
+  {
+    std::unique_lock<std::shared_mutex> state_guard(impl_->state_mutex);
+    impl_->head.present = true;
+    impl_->head.incarnation = head_record.incarnation;
+    impl_->head.generation = head_record.generation;
+    impl_->head.revision = head_record.revision;
+    impl_->head.tick = head_record.tick;
+    impl_->head.payload_digest = head_record.payload_digest;
+    impl_->head.payload_bytes = head_record.payload_bytes;
+    impl_->head.state_file = head_record.state_file;
+    impl_->cached_state = std::make_shared<const FacilityState>(next);
+  }
+
+  // Stage 5: advance the rollback fence. If it cannot be advanced now, the next
+  // commit advances it past this revision as well.
   AuthorityMarker marker = impl_->authority;
   if (next.revision() > marker.highest_revision) {
     marker.highest_revision = next.revision();
@@ -963,17 +1028,19 @@ Result<CommitReport> DurableStore::commit(const WriterLease& lease,
   if (next.generation() > marker.highest_generation) {
     marker.highest_generation = next.generation();
   }
-  const Bytes authority_image = encode_authority(marker);
-  const std::string authority_staging = impl_->staging_path("authority.tmp");
-  PCP_TRY_STATUS(detail::write_new_file_durable(authority_staging, authority_image.data(),
-                                                authority_image.size()));
-  PCP_TRY_STATUS(detail::replace_file_atomic(authority_staging,
-                                             impl_->path_of(kAuthorityFileName)));
-  impl_->authority = marker;
-  report.reached = CommitStage::authority_marked;
-  impl_->notify(CommitStage::authority_marked, report);
+  const bool fence_advanced =
+      publish_authority_marker(impl_->staging_path(kAuthorityStagingName),
+                               impl_->path_of(kAuthorityFileName), marker)
+          .ok();
+  if (fence_advanced) {
+    impl_->authority = marker;
+    report.reached = CommitStage::authority_marked;
+    impl_->notify(CommitStage::authority_marked, report);
+  }
 
-  // Stage 6: retire safe residue.
+  // Stage 6: retire safe residue. A generation that cannot be removed right now,
+  // for example while another process is reading it, is left for a later commit
+  // or the next open.
   ++report.retired_residue;
   auto entries = detail::list_directory(impl_->root, impl_->options.limits);
   if (entries.has_value()) {
@@ -991,24 +1058,14 @@ Result<CommitReport> DurableStore::commit(const WriterLease& lease,
       if (victim == next.revision()) {
         continue;
       }
-      PCP_TRY_STATUS(detail::remove_file_if_present(impl_->path_of(state_file_name(victim))));
-      ++report.retired_residue;
+      if (detail::remove_file_if_present(impl_->path_of(state_file_name(victim))).ok()) {
+        ++report.retired_residue;
+      }
     }
   }
-  report.reached = CommitStage::residue_retired;
-  impl_->notify(CommitStage::residue_retired, report);
-
-  {
-    std::unique_lock<std::shared_mutex> state_guard(impl_->state_mutex);
-    impl_->head.present = true;
-    impl_->head.incarnation = head_record.incarnation;
-    impl_->head.generation = head_record.generation;
-    impl_->head.revision = head_record.revision;
-    impl_->head.tick = head_record.tick;
-    impl_->head.payload_digest = head_record.payload_digest;
-    impl_->head.payload_bytes = head_record.payload_bytes;
-    impl_->head.state_file = head_record.state_file;
-    impl_->cached_state = std::make_shared<const FacilityState>(next);
+  if (fence_advanced) {
+    report.reached = CommitStage::residue_retired;
+    impl_->notify(CommitStage::residue_retired, report);
   }
   return report;
 }
